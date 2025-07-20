@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>机械臂矩阵变换演示</title>
+    <style>
+        body {
+            background: #f5f5f5;
+            color: #333;
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+        h2 {
+            color: #0f62fe;
+        }
+        #controls {
+            background: #fff;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: center;
+            box-shadow: 0 0 5px #ccc;
+        }
+        button {
+            background: #0f62fe;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            padding: 8px 12px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        button:hover {
+            background: #004aad;
+        }
+        input {
+            width: 60px;
+            padding: 4px;
+            border-radius: 4px;
+            border: 1px solid #aaa;
+        }
+        #infoPanels {
+            display: flex;
+            gap: 20px;
+            margin-top: 10px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        .panel {
+            background: #fff;
+            padding: 10px;
+            border-radius: 8px;
+            min-width: 220px;
+            max-height: 200px;
+            overflow-y: auto;
+            box-shadow: 0 0 5px #ccc;
+        }
+        canvas {
+            border: 1px solid #aaa;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 0 5px #ccc;
+            margin-top: 10px;
+        }
+        ol {
+            padding-left: 20px;
+        }
+        .matrix-display {
+            white-space: pre;
+            font-family: monospace;
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+<h2>机械臂矩阵乘法演示</h2>
+
+<div id="controls">
+    <button onclick="addRotate()">添加旋转(度)</button>
+    <input type="number" id="rotateAngle" value="45">
+    <button onclick="addTranslate()">添加平移(dx, dy)</button>
+    dx: <input type="number" id="dx" value="50">
+    dy: <input type="number" id="dy" value="0">
+    <button onclick="reset()">重置</button>
+    <button onclick="runCommandsWithSmoothAnimation()">执行指令</button>
+</div>
+
+<div id="infoPanels">
+    <div class="panel">
+        <strong>指令列表：</strong>
+        <ol id="commandList"></ol>
+    </div>
+    <div class="panel">
+        <strong>变换矩阵：</strong>
+        <div id="matrixDisplay" class="matrix-display"></div>
+    </div>
+    <div class="panel">
+        <strong>末端坐标：</strong>
+        <div id="endPoint"></div>
+    </div>
+</div>
+
+<canvas id="canvas" width="500" height="500"></canvas>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let commands = [];
+let baseMatrix = identity();
+const armLength = 100;
+let tracePoints = [];
+
+function identity() {
+    return [[1,0,0],[0,1,0],[0,0,1]];
+}
+
+function multiply(a, b) {
+    let res = Array(3).fill(0).map(()=>Array(3).fill(0));
+    for(let i=0;i<3;i++)
+        for(let j=0;j<3;j++)
+            for(let k=0;k<3;k++)
+                res[i][j] += a[i][k]*b[k][j];
+    return res;
+}
+
+function rotateMatrix(deg) {
+    let rad = deg * Math.PI / 180;
+    return [[Math.cos(rad), -Math.sin(rad), 0], [Math.sin(rad), Math.cos(rad), 0], [0,0,1]];
+}
+
+function translateMatrix(dx, dy) {
+    return [[1,0,dx], [0,1,dy], [0,0,1]];
+}
+
+function applyMatrix(m, p) {
+    return [m[0][0]*p[0]+m[0][1]*p[1]+m[0][2], m[1][0]*p[0]+m[1][1]*p[1]+m[1][2]];
+}
+
+function drawCoordinateSystem() {
+    ctx.save();
+    ctx.translate(canvas.width/2, canvas.height/2);
+    ctx.strokeStyle = '#aaa';
+    ctx.fillStyle = '#333';
+    ctx.lineWidth = 1;
+
+    // 主轴
+    ctx.beginPath(); ctx.moveTo(-canvas.width/2,0); ctx.lineTo(canvas.width/2,0); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,-canvas.height/2); ctx.lineTo(0,canvas.height/2); ctx.stroke();
+
+    ctx.font = '12px Arial';
+
+    // 刻度与标注
+    for (let x = -canvas.width/2; x <= canvas.width/2; x += 50) {
+        if (x !== 0) {
+            ctx.beginPath();
+            ctx.moveTo(x, -5);
+            ctx.lineTo(x, 5);
+            ctx.stroke();
+            ctx.fillText(x, x - 10, 15);
+        }
+    }
+    for (let y = -canvas.height/2; y <= canvas.height/2; y += 50) {
+        if (y !== 0) {
+            ctx.beginPath();
+            ctx.moveTo(-5, y);
+            ctx.lineTo(5, y);
+            ctx.stroke();
+            ctx.fillText(-y, 8, y + 4);
+        }
+    }
+    ctx.restore();
+}
+
+function drawTrace() {
+    ctx.save();
+    ctx.translate(canvas.width/2, canvas.height/2);
+    ctx.strokeStyle = 'red';
+    ctx.beginPath();
+    tracePoints.forEach((p,i)=>{
+        if(i===0) ctx.moveTo(p[0], -p[1]);
+        else ctx.lineTo(p[0], -p[1]);
+    });
+    ctx.stroke();
+    ctx.restore();
+}
+
+function drawArm(matrix) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    drawCoordinateSystem();
+    drawTrace();
+    ctx.save();
+    ctx.translate(canvas.width/2, canvas.height/2);
+    ctx.transform(matrix[0][0], -matrix[1][0], matrix[0][1], -matrix[1][1], matrix[0][2], -matrix[1][2]);
+    ctx.strokeStyle = '#0f62fe';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(armLength,0); ctx.stroke();
+    ctx.restore();
+    let end = applyMatrix(matrix, [armLength,0]);
+    document.getElementById('endPoint').innerText = `(${end[0].toFixed(2)}, ${end[1].toFixed(2)})`;
+    tracePoints.push(end);
+}
+
+function addRotate() {
+    let angle = parseFloat(document.getElementById('rotateAngle').value);
+    commands.push({type: 'rotate', value: angle});
+    updateCommandList();
+}
+
+function addTranslate() {
+    let dx = parseFloat(document.getElementById('dx').value);
+    let dy = parseFloat(document.getElementById('dy').value);
+    commands.push({type: 'translate', dx: dx, dy: dy});
+    updateCommandList();
+}
+
+function updateCommandList() {
+    let list = document.getElementById('commandList');
+    list.innerHTML = '';
+    commands.forEach((cmd) => {
+        let li = document.createElement('li');
+        li.innerText = cmd.type === 'rotate' ? `旋转 ${cmd.value}°` : `平移 dx=${cmd.dx}, dy=${cmd.dy}`;
+        list.appendChild(li);
+    });
+}
+
+function reset() {
+    commands = [];
+    tracePoints = [];
+    updateCommandList();
+    baseMatrix = identity();
+    drawArm(baseMatrix);
+    document.getElementById('matrixDisplay').innerText = '';
+    document.getElementById('endPoint').innerText = '';
+}
+
+function runCommandsWithSmoothAnimation() {
+    baseMatrix = identity();
+    tracePoints = [];
+    document.getElementById('matrixDisplay').innerText = '';
+    let index = 0;
+
+    function animateStep(cmd, onComplete) {
+        let totalFrames = 60, frame = 0;
+        let mIncrement, stepMatrix = identity();
+
+        if(cmd.type==='rotate') mIncrement = rotateMatrix(cmd.value/totalFrames);
+        else mIncrement = translateMatrix(cmd.dx/totalFrames, cmd.dy/totalFrames);
+
+        function animate() {
+            baseMatrix = multiply(mIncrement, baseMatrix);
+            stepMatrix = multiply(mIncrement, stepMatrix);
+            drawArm(baseMatrix);
+            frame++;
+            if(frame < totalFrames) requestAnimationFrame(animate);
+            else {
+                document.getElementById('matrixDisplay').innerText += formatMatrix(stepMatrix) + '\n';
+                onComplete();
+            }
+        }
+        animate();
+    }
+
+    function nextCommand() {
+        if(index >= commands.length) {
+            document.getElementById('matrixDisplay').innerText += '累计变换矩阵：\n' + formatMatrix(baseMatrix);
+            return;
+        }
+        animateStep(commands[index], () => { index++; nextCommand(); });
+    }
+    nextCommand();
+}
+
+function formatMatrix(m) {
+    return m.map(r => r.map(x => x.toFixed(2)).join('\t')).join('\n');
+}
+
+reset();
+</script>
+</body>
+</html>
